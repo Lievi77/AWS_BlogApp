@@ -1,24 +1,40 @@
 import React, { Component } from "react";
 import { listPosts } from "../graphql/queries";
-import { API, graphqlOperation } from "aws-amplify";
+import { Auth, API, graphqlOperation } from "aws-amplify";
 import DeletePost from "../components/DeletePost";
 import EditPost from "../components/EditPost";
 import CommentPost from "../components/CommentPost";
 import {
   onCreateComment,
+  onCreateLike,
   onCreatePost,
   onDeletePost,
   onUpdatePost,
 } from "../graphql/subscriptions";
 import CreateCommentPost from "./CreateCommentPost";
+import { FaThumbsUp } from "react-icons/fa";
+import { createLike } from "../graphql/mutations";
 
 class DisplayPosts extends Component {
   state = {
+    ownerId: "",
+    ownerUsername: "",
+    isHovering: false,
+    postLikedBy: [],
     posts: [],
   };
 
   componentDidMount = async () => {
     this.getPosts();
+
+    await Auth.currentUserInfo().then((user) => {
+      this.setState({
+        ownerId: user.attributes.sub,
+        ownerUsername: user.username,
+      });
+      // console.log("Curr User: ", user.username);
+      //console.log("Attr.Sub: User ", user.username.attributes.id);
+    });
 
     //! Important, example on how to use GRAPHQL Subscriptions
     //listeners are expensive
@@ -80,14 +96,31 @@ class DisplayPosts extends Component {
         this.setState({ posts });
       },
     });
+
+    this.createPostLikeListener = API.graphql(
+      graphqlOperation(onCreateLike)
+    ).subscribe({
+      next: (postData) => {
+        const createdLike = postData.value.data.onCreateLike;
+        let posts = [...this.state.posts];
+        for (let post of posts) {
+          if (createdLike.post.id === post.id) {
+            post.likes.items.push(createdLike);
+          }
+        }
+
+        this.setState({ posts });
+      },
+    });
   };
 
-  //important!, alwas unmount streams of data
+  //important!, always unmount streams of data
   componentWillUnmount() {
     this.createPostListener.unsubscribe();
     this.deletePostListener.unsubscribe();
     this.updatePostListener.unsubscribe();
     this.createPostCommentListener.unsubscribe();
+    this.createPostLikeListener.unsubscribe();
   }
 
   getPosts = async () => {
@@ -100,8 +133,49 @@ class DisplayPosts extends Component {
     //console.log("All Posts: ", result.data.listPosts.items);
   };
 
+  //prevents the user from liking posts more than once
+  likedPost = (postId) => {
+    //postId : the id of the already liked post
+    for (let post of this.state.posts) {
+      if (post.id === postId) {
+        if (post.postOwnerId === this.state.ownerId) return true;
+        for (let like of post.likes.items) {
+          if (like.likeOwnerId === this.state.ownerId) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  handleLike = async (postId) => {
+    if (this.likedPost(postId)) {
+      return this.setState({ errorMessage: "Can't like your own post..." });
+    } else {
+      const input = {
+        numberLikes: 1,
+        likeOwnerId: this.state.ownerId,
+        likeOwnerUsername: this.state.ownerUsername,
+        likePostId: postId,
+      };
+
+      try {
+        const result = await API.graphql(
+          graphqlOperation(createLike, { input })
+        );
+
+        console.log("Liked: ", result.data);
+      } catch (error) {
+        console.error(error);
+      }
+    }
+  };
+
   render() {
     const { posts } = this.state;
+
+    let loggedInUser = this.state.ownerId;
 
     //Follow data model on dynamo db
     return posts.map((post) => {
@@ -121,8 +195,21 @@ class DisplayPosts extends Component {
 
           <br />
           <span>
-            <DeletePost data={post} />
-            <EditPost {...post} />
+            {post.postOwnerId === loggedInUser && <DeletePost data={post} />}
+
+            {post.postOwnerId === loggedInUser && <EditPost {...post} />}
+
+            <span>
+              <p className="alert">
+                {" "}
+                {post.postOwnerId === loggedInUser &&
+                  this.state.errorMessage}{" "}
+              </p>
+              <p onClick={() => this.handleLike(post.id)}>
+                <FaThumbsUp />
+                {post.likes.items.length}
+              </p>
+            </span>
           </span>
 
           <span>
